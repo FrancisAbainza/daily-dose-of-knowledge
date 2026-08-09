@@ -1,20 +1,34 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import HomeScreen from './screens/HomeScreen';
+import TriviaScreen from './screens/TriviaScreen';
+import VocabularyScreen from './screens/VocabularyScreen';
+import QuotesScreen from './screens/QuotesScreen';
+import BibleVerseScreen from './screens/BibleVerseScreen';
+
+export type RootStackParamList = {
+  Home: undefined;
+  Trivia: undefined;
+  Vocabulary: undefined;
+  Quotes: undefined;
+  BibleVerse: undefined;
+};
+
+const Stack = createStackNavigator<RootStackParamList>();
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <NavigationContainer>
+      <Stack.Navigator
+        initialRouteName="Home"
+        screenOptions={{ headerStyle: { backgroundColor: '#f7f9fc' }, headerTintColor: '#111827' }}
+      >
+        <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
+        <Stack.Screen name="Trivia" component={TriviaScreen} />
+        <Stack.Screen name="Vocabulary" component={VocabularyScreen} />
+        <Stack.Screen name="Quotes" component={QuotesScreen} />
+        <Stack.Screen name="BibleVerse" component={BibleVerseScreen} options={{ title: 'Bible Verse' }} />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
