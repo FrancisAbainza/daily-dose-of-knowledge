@@ -5,6 +5,17 @@ import TriviaScreen from './screens/TriviaScreen';
 import VocabularyScreen from './screens/VocabularyScreen';
 import QuotesScreen from './screens/QuotesScreen';
 import BibleVerseScreen from './screens/BibleVerseScreen';
+import * as Notifications from 'expo-notifications';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export type RootStackParamList = {
   Home: undefined;

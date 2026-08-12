@@ -2,24 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, Switch, TextInput } from 'react-native';
 import { Brain } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 
 const STORAGE_KEY_ENABLED = '@trivia_daily_enabled';
 const STORAGE_KEY_INTERVAL = '@trivia_interval_hours';
 
 const DEFAULT_INTERVAL_HOURS = '12';
+const TRIVIA_NOTIFICATION_ID = 'trivia-daily-notification';
+
+// Dummy trivia content — swap for a real question source later.
+const DUMMY_TRIVIA = {
+  title: 'Trivia time! 🧠',
+  body: 'Which planet in our solar system has the most moons?',
+};
 
 export default function TriviaScreen() {
   const [dailyTriviaEnabled, setDailyTriviaEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_INTERVAL_HOURS);
 
-  // Tracks whether the initial load has finished, without being a reactive
-  // dependency itself — so the save effects below don't fire on the
-  // false -> true transition, only on genuine user-driven changes.
   const hasLoaded = useRef(false);
-
-  // Remembers the last valid (1-24) interval so we can restore it if the
-  // user leaves the field empty on blur, without blocking them from
-  // clearing it mid-edit (e.g. to retype "12" as "20").
   const lastValidInterval = useRef(DEFAULT_INTERVAL_HOURS);
 
   // Load persisted settings on mount
@@ -56,9 +57,7 @@ export default function TriviaScreen() {
     });
   }, [dailyTriviaEnabled]);
 
-  // Persist interval whenever the user changes it. Skips saving while the
-  // field is mid-edit and empty — that's a transient typing state, not a
-  // real value the user has committed to.
+  // Persist interval whenever the user changes it.
   useEffect(() => {
     if (!hasLoaded.current) return;
     if (intervalHours === '') return;
@@ -69,16 +68,56 @@ export default function TriviaScreen() {
     });
   }, [intervalHours]);
 
+  // Schedule/reschedule the repeating notification whenever the enabled
+  // flag or interval changes (after initial load, and skipping the
+  // transient empty-string typing state).
+  useEffect(() => {
+    if (!hasLoaded.current) return;
+    if (intervalHours === '') return;
+
+    const syncNotification = async () => {
+      // Always clear any existing schedule first, so toggling off or
+      // changing the interval doesn't leave a stale notification behind.
+      await Notifications.cancelScheduledNotificationAsync(TRIVIA_NOTIFICATION_ID).catch(() => {});
+
+      if (!dailyTriviaEnabled) return;
+
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        console.warn('Notification permission not granted; trivia notifications disabled.');
+        return;
+      }
+
+      const seconds = parseInt(intervalHours, 10) * 3600;
+
+      await Notifications.scheduleNotificationAsync({
+        identifier: TRIVIA_NOTIFICATION_ID,
+        content: {
+          title: DUMMY_TRIVIA.title,
+          body: DUMMY_TRIVIA.body,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+          seconds,
+          repeats: true,
+        },
+      });
+    };
+
+    syncNotification();
+  }, [dailyTriviaEnabled, intervalHours]);
+
   const handleIntervalChange = (value: string) => {
-    // Allow the field to be momentarily empty while the user is editing
-    // (e.g. clearing "12" to type "20"). It's restored on blur and never
-    // persisted to storage — see the effect above and handleIntervalBlur.
     if (value === '') {
       setIntervalHours('');
       return;
     }
 
-    // Only digits allowed
     if (!/^\d+$/.test(value)) {
       return;
     }
