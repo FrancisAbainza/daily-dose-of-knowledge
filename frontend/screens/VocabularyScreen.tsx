@@ -1,26 +1,42 @@
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View, Switch, TextInput } from 'react-native';
-import { BookOpen } from 'lucide-react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  Switch,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { BookOpen, RefreshCw } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { fetchVocabulary, VocabularyItem } from '../api/content';
 
 const STORAGE_KEY_ENABLED = '@vocabulary_daily_enabled';
 const STORAGE_KEY_INTERVAL = '@vocabulary_interval_hours';
+const STORAGE_KEY_HISTORY = '@vocabulary_history';
 
 const DEFAULT_INTERVAL_HOURS = '12';
 const VOCABULARY_NOTIFICATION_ID = 'vocabulary-daily-notification';
+const MAX_HISTORY = 20;
 
-const DAILY_WORD = {
-  title: 'Word of the day 📚',
-  body: 'Today’s word: benevolent — kind, generous, and well-meaning.',
+type VocabularyHistoryEntry = VocabularyItem & {
+  id: string;
+  fetchedAt: number;
 };
 
 export default function VocabularyScreen() {
   const [dailyVocabularyEnabled, setDailyVocabularyEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_INTERVAL_HOURS);
+  const [history, setHistory] = useState<VocabularyHistoryEntry[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const hasLoaded = useRef(false);
   const lastValidInterval = useRef(DEFAULT_INTERVAL_HOURS);
+  const historyRef = useRef<VocabularyHistoryEntry[]>([]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -64,6 +80,39 @@ export default function VocabularyScreen() {
     });
   }, [intervalHours]);
 
+  const getNewVocabulary = async (): Promise<VocabularyHistoryEntry | null> => {
+    setIsFetching(true);
+    setErrorMsg(null);
+
+    try {
+      const recentWords = historyRef.current.map((item) => item.word);
+      const vocabulary = await fetchVocabulary(recentWords);
+
+      const entry: VocabularyHistoryEntry = {
+        id: `${Date.now()}`,
+        word: vocabulary.word,
+        definition: vocabulary.definition,
+        fetchedAt: Date.now(),
+      };
+
+      const updatedHistory = [entry, ...historyRef.current].slice(0, MAX_HISTORY);
+      historyRef.current = updatedHistory;
+      setHistory(updatedHistory);
+
+      AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)).catch((error) => {
+        console.warn('Failed to save vocabulary history:', error);
+      });
+
+      return entry;
+    } catch (error) {
+      console.warn('Failed to fetch vocabulary:', error);
+      setErrorMsg('Could not fetch a new word. Please try again.');
+      return null;
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
   useEffect(() => {
     if (!hasLoaded.current) return;
     if (intervalHours === '') return;
@@ -84,13 +133,14 @@ export default function VocabularyScreen() {
         return;
       }
 
+      const entry = await getNewVocabulary();
       const seconds = parseInt(intervalHours, 10) * 3600;
 
       await Notifications.scheduleNotificationAsync({
         identifier: VOCABULARY_NOTIFICATION_ID,
         content: {
-          title: DAILY_WORD.title,
-          body: DAILY_WORD.body,
+          title: 'Word of the day 📚',
+          body: entry?.word ? `${entry.word} — ${entry.definition}` : 'Check out today\'s word of the day!',
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -101,6 +151,7 @@ export default function VocabularyScreen() {
     };
 
     syncNotification();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyVocabularyEnabled, intervalHours]);
 
   const handleIntervalChange = (value: string) => {
@@ -163,6 +214,43 @@ export default function VocabularyScreen() {
           </View>
         )}
       </View>
+
+      <TouchableOpacity
+        style={styles.fetchButton}
+        onPress={getNewVocabulary}
+        disabled={isFetching}
+      >
+        {isFetching ? (
+          <ActivityIndicator color="#ffffff" size="small" />
+        ) : (
+          <>
+            <RefreshCw size={16} color="#ffffff" />
+            <Text style={styles.fetchButtonText}>Get New Word</Text>
+          </>
+        )}
+      </TouchableOpacity>
+
+      {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+
+      <Text style={styles.historyTitle}>Recent Words</Text>
+
+      <FlatList
+        data={history}
+        keyExtractor={(item) => item.id}
+        style={styles.historyList}
+        contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
+        ListEmptyComponent={
+          <Text style={styles.historyEmptyText}>
+            No words yet — tap "Get New Word" to fetch one.
+          </Text>
+        }
+        renderItem={({ item }) => (
+          <View style={styles.historyItem}>
+            <Text style={styles.historyQuestion}>{item.word}</Text>
+            <Text style={styles.historyAnswer}>{item.definition}</Text>
+          </View>
+        )}
+      />
     </View>
   );
 }
@@ -227,5 +315,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#111827',
     backgroundColor: '#f9fafb',
+  },
+  fetchButton: {
+    marginTop: 16,
+    backgroundColor: '#7c3aed',
+    borderRadius: 10,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  fetchButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#dc2626',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  historyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  historyList: {
+    flex: 1,
+  },
+  historyEmptyContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  historyEmptyText: {
+    textAlign: 'center',
+    color: '#9ca3af',
+    fontSize: 14,
+  },
+  historyItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+  },
+  historyQuestion: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  historyAnswer: {
+    fontSize: 14,
+    color: '#4b5563',
   },
 });

@@ -1,35 +1,57 @@
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View, Switch, TextInput } from 'react-native';
-import { Brain } from 'lucide-react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  Switch,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { Brain, RefreshCw } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { fetchTrivia, TriviaItem } from '../api/content'; // adjust path as needed
 
 const STORAGE_KEY_ENABLED = '@trivia_daily_enabled';
 const STORAGE_KEY_INTERVAL = '@trivia_interval_hours';
+const STORAGE_KEY_HISTORY = '@trivia_history';
 
 const DEFAULT_INTERVAL_HOURS = '12';
 const TRIVIA_NOTIFICATION_ID = 'trivia-daily-notification';
+const MAX_HISTORY = 20;
 
-// Dummy trivia content — swap for a real question source later.
-const DUMMY_TRIVIA = {
-  title: 'Trivia time! 🧠',
-  body: 'Which planet in our solar system has the most moons?',
+type TriviaHistoryEntry = TriviaItem & {
+  id: string;
+  fetchedAt: number;
 };
 
 export default function TriviaScreen() {
   const [dailyTriviaEnabled, setDailyTriviaEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_INTERVAL_HOURS);
+  const [history, setHistory] = useState<TriviaHistoryEntry[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const hasLoaded = useRef(false);
   const lastValidInterval = useRef(DEFAULT_INTERVAL_HOURS);
+  const historyRef = useRef<TriviaHistoryEntry[]>([]);
 
-  // Load persisted settings on mount
+  // keep a ref in sync so async callbacks always see latest history
+  // without needing to be re-created on every history change
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  // Load persisted settings + history on mount
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const [storedEnabled, storedInterval] = await Promise.all([
+        const [storedEnabled, storedInterval, storedHistory] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY_ENABLED),
           AsyncStorage.getItem(STORAGE_KEY_INTERVAL),
+          AsyncStorage.getItem(STORAGE_KEY_HISTORY),
         ]);
 
         if (storedEnabled !== null) {
@@ -38,6 +60,11 @@ export default function TriviaScreen() {
         if (storedInterval !== null) {
           setIntervalHours(storedInterval);
           lastValidInterval.current = storedInterval;
+        }
+        if (storedHistory !== null) {
+          const parsed = JSON.parse(storedHistory);
+          setHistory(parsed);
+          historyRef.current = parsed;
         }
       } catch (error) {
         console.warn('Failed to load trivia settings:', error);
@@ -68,6 +95,41 @@ export default function TriviaScreen() {
     });
   }, [intervalHours]);
 
+  // Fetch a new trivia from the backend, save it into history (capped at 20),
+  // and return the new entry so callers (e.g. notification scheduling) can use it.
+  const getNewTrivia = async (): Promise<TriviaHistoryEntry | null> => {
+    setIsFetching(true);
+    setErrorMsg(null);
+
+    try {
+      const recentQuestions = historyRef.current.map((item) => item.question);
+      const trivia = await fetchTrivia(recentQuestions);
+
+      const entry: TriviaHistoryEntry = {
+        id: `${Date.now()}`,
+        question: trivia.question,
+        answer: trivia.answer,
+        fetchedAt: Date.now(),
+      };
+
+      const updatedHistory = [entry, ...historyRef.current].slice(0, MAX_HISTORY);
+      historyRef.current = updatedHistory;
+      setHistory(updatedHistory);
+
+      AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)).catch((error) => {
+        console.warn('Failed to save trivia history:', error);
+      });
+
+      return entry;
+    } catch (error) {
+      console.warn('Failed to fetch trivia:', error);
+      setErrorMsg('Could not fetch a new trivia. Please try again.');
+      return null;
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
   // Schedule/reschedule the repeating notification whenever the enabled
   // flag or interval changes (after initial load, and skipping the
   // transient empty-string typing state).
@@ -93,13 +155,20 @@ export default function TriviaScreen() {
         return;
       }
 
+      // Fetch a fresh trivia to use as the notification content.
+      // Note: because this is a REPEATING local notification, it will keep
+      // reusing this same question on every future occurrence — Expo local
+      // notifications can't fetch new content each time they fire. To get a
+      // genuinely new question every time, you'd need a background fetch task
+      // or to reschedule from within the app each time it's opened.
+      const entry = await getNewTrivia();
       const seconds = parseInt(intervalHours, 10) * 3600;
 
       await Notifications.scheduleNotificationAsync({
         identifier: TRIVIA_NOTIFICATION_ID,
         content: {
-          title: DUMMY_TRIVIA.title,
-          body: DUMMY_TRIVIA.body,
+          title: 'Trivia time! 🧠',
+          body: entry?.question ?? 'Which planet in our solar system has the most moons?',
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -110,6 +179,7 @@ export default function TriviaScreen() {
     };
 
     syncNotification();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyTriviaEnabled, intervalHours]);
 
   const handleIntervalChange = (value: string) => {
@@ -172,6 +242,43 @@ export default function TriviaScreen() {
           </View>
         )}
       </View>
+
+      <TouchableOpacity
+        style={styles.fetchButton}
+        onPress={getNewTrivia}
+        disabled={isFetching}
+      >
+        {isFetching ? (
+          <ActivityIndicator color="#ffffff" size="small" />
+        ) : (
+          <>
+            <RefreshCw size={16} color="#ffffff" />
+            <Text style={styles.fetchButtonText}>Get New Trivia</Text>
+          </>
+        )}
+      </TouchableOpacity>
+
+      {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+
+      <Text style={styles.historyTitle}>Recent Trivia</Text>
+
+      <FlatList
+        data={history}
+        keyExtractor={(item) => item.id}
+        style={styles.historyList}
+        contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
+        ListEmptyComponent={
+          <Text style={styles.historyEmptyText}>
+            No trivia yet — tap "Get New Trivia" to fetch one.
+          </Text>
+        }
+        renderItem={({ item }) => (
+          <View style={styles.historyItem}>
+            <Text style={styles.historyQuestion}>{item.question}</Text>
+            <Text style={styles.historyAnswer}>{item.answer}</Text>
+          </View>
+        )}
+      />
     </View>
   );
 }
@@ -236,5 +343,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#111827',
     backgroundColor: '#f9fafb',
+  },
+  fetchButton: {
+    marginTop: 16,
+    backgroundColor: '#2563eb',
+    borderRadius: 10,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  fetchButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#dc2626',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  historyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  historyList: {
+    flex: 1,
+  },
+  historyEmptyContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  historyEmptyText: {
+    textAlign: 'center',
+    color: '#9ca3af',
+    fontSize: 14,
+  },
+  historyItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+  },
+  historyQuestion: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  historyAnswer: {
+    fontSize: 14,
+    color: '#4b5563',
   },
 });

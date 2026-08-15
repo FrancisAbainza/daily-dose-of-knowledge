@@ -1,26 +1,42 @@
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View, Switch, TextInput } from 'react-native';
-import { Quote } from 'lucide-react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  Switch,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { Quote, RefreshCw } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { fetchQuote, QuoteItem } from '../api/content';
 
 const STORAGE_KEY_ENABLED = '@quotes_daily_enabled';
 const STORAGE_KEY_INTERVAL = '@quotes_interval_hours';
+const STORAGE_KEY_HISTORY = '@quotes_history';
 
 const DEFAULT_INTERVAL_HOURS = '12';
 const QUOTES_NOTIFICATION_ID = 'quotes-daily-notification';
+const MAX_HISTORY = 20;
 
-const DAILY_QUOTE = {
-  title: 'Quote of the day ✨',
-  body: '“Success is the sum of small efforts, repeated day in and day out.” — Robert Collier',
+type QuoteHistoryEntry = QuoteItem & {
+  id: string;
+  fetchedAt: number;
 };
 
 export default function QuotesScreen() {
   const [dailyQuoteEnabled, setDailyQuoteEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_INTERVAL_HOURS);
+  const [history, setHistory] = useState<QuoteHistoryEntry[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const hasLoaded = useRef(false);
   const lastValidInterval = useRef(DEFAULT_INTERVAL_HOURS);
+  const historyRef = useRef<QuoteHistoryEntry[]>([]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -64,6 +80,38 @@ export default function QuotesScreen() {
     });
   }, [intervalHours]);
 
+  const getNewQuote = async (): Promise<QuoteHistoryEntry | null> => {
+    setIsFetching(true);
+    setErrorMsg(null);
+
+    try {
+      const recentQuotes = historyRef.current.map((item) => item.quote);
+      const quote = await fetchQuote(recentQuotes);
+
+      const entry: QuoteHistoryEntry = {
+        id: `${Date.now()}`,
+        quote: quote.quote,
+        fetchedAt: Date.now(),
+      };
+
+      const updatedHistory = [entry, ...historyRef.current].slice(0, MAX_HISTORY);
+      historyRef.current = updatedHistory;
+      setHistory(updatedHistory);
+
+      AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)).catch((error) => {
+        console.warn('Failed to save quote history:', error);
+      });
+
+      return entry;
+    } catch (error) {
+      console.warn('Failed to fetch quote:', error);
+      setErrorMsg('Could not fetch a new quote. Please try again.');
+      return null;
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
   useEffect(() => {
     if (!hasLoaded.current) return;
     if (intervalHours === '') return;
@@ -84,13 +132,14 @@ export default function QuotesScreen() {
         return;
       }
 
+      const entry = await getNewQuote();
       const seconds = parseInt(intervalHours, 10) * 3600;
 
       await Notifications.scheduleNotificationAsync({
         identifier: QUOTES_NOTIFICATION_ID,
         content: {
-          title: DAILY_QUOTE.title,
-          body: DAILY_QUOTE.body,
+          title: 'Quote of the day ✨',
+          body: entry?.quote ?? 'Check out today\'s quote!',
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -101,6 +150,7 @@ export default function QuotesScreen() {
     };
 
     syncNotification();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyQuoteEnabled, intervalHours]);
 
   const handleIntervalChange = (value: string) => {
@@ -163,6 +213,42 @@ export default function QuotesScreen() {
           </View>
         )}
       </View>
+
+      <TouchableOpacity
+        style={styles.fetchButton}
+        onPress={getNewQuote}
+        disabled={isFetching}
+      >
+        {isFetching ? (
+          <ActivityIndicator color="#ffffff" size="small" />
+        ) : (
+          <>
+            <RefreshCw size={16} color="#ffffff" />
+            <Text style={styles.fetchButtonText}>Get New Quote</Text>
+          </>
+        )}
+      </TouchableOpacity>
+
+      {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+
+      <Text style={styles.historyTitle}>Recent Quotes</Text>
+
+      <FlatList
+        data={history}
+        keyExtractor={(item) => item.id}
+        style={styles.historyList}
+        contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
+        ListEmptyComponent={
+          <Text style={styles.historyEmptyText}>
+            No quotes yet — tap "Get New Quote" to fetch one.
+          </Text>
+        }
+        renderItem={({ item }) => (
+          <View style={styles.historyItem}>
+            <Text style={styles.historyQuestion}>{item.quote}</Text>
+          </View>
+        )}
+      />
     </View>
   );
 }
@@ -227,5 +313,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#111827',
     backgroundColor: '#f9fafb',
+  },
+  fetchButton: {
+    marginTop: 16,
+    backgroundColor: '#dc2626',
+    borderRadius: 10,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  fetchButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#dc2626',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  historyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  historyList: {
+    flex: 1,
+  },
+  historyEmptyContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  historyEmptyText: {
+    textAlign: 'center',
+    color: '#9ca3af',
+    fontSize: 14,
+  },
+  historyItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+  },
+  historyQuestion: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  historyAnswer: {
+    fontSize: 14,
+    color: '#4b5563',
   },
 });
