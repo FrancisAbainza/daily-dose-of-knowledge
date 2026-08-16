@@ -36,6 +36,10 @@ const getDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+// Whether a history entry was fetched on today's local calendar date, so
+// it can be visually emphasized in the list.
+const isToday = (timestamp: number) => getDateString(new Date(timestamp)) === getDateString(new Date());
+
 export default function TriviaScreen() {
   const [dailyTriviaEnabled, setDailyTriviaEnabled] = useState(false);
   const [history, setHistory] = useState<TriviaHistoryEntry[]>([]);
@@ -224,7 +228,7 @@ export default function TriviaScreen() {
         <Text style={styles.screenTitle}>Trivia</Text>
       </View>
       <Text style={styles.screenDescription}>
-        Get {TRIVIAS_PER_DAY} trivia questions generated automatically every day.
+        Get {TRIVIAS_PER_DAY} trivia questions generated automatically every day at midnight.
       </Text>
 
       <View style={styles.settingsSection}>
@@ -276,12 +280,22 @@ export default function TriviaScreen() {
             No trivia yet — enable daily trivia above.
           </Text>
         }
-        renderItem={({ item }) => (
-          <View style={styles.historyItem}>
-            <Text style={styles.historyQuestion}>{item.question}</Text>
-            <Text style={styles.historyAnswer}>{item.answer}</Text>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const isNew = isToday(item.fetchedAt);
+          return (
+            <View style={[styles.historyItem, isNew && styles.historyItemToday]}>
+              {isNew && (
+                <View style={styles.todayBadge}>
+                  <Text style={styles.todayBadgeText}>TODAY</Text>
+                </View>
+              )}
+              <Text style={[styles.historyQuestion, isNew && styles.historyQuestionToday]}>
+                {item.question}
+              </Text>
+              <Text style={styles.historyAnswer}>{item.answer}</Text>
+            </View>
+          );
+        }}
       />
     </View>
   );
@@ -375,11 +389,39 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 10,
   },
+  historyItemToday: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1.5,
+    borderColor: '#2563eb',
+    shadowColor: '#2563eb',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  todayBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#2563eb',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 8,
+  },
+  todayBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
   historyQuestion: {
     fontSize: 15,
     fontWeight: '600',
     color: '#111827',
     marginBottom: 4,
+  },
+  historyQuestionToday: {
+    color: '#1e3a8a',
+    fontWeight: '700',
   },
   historyAnswer: {
     fontSize: 14,

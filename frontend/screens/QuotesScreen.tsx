@@ -36,6 +36,10 @@ const getDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+// Whether a history entry was fetched on today's local calendar date, so
+// it can be visually emphasized in the list.
+const isToday = (timestamp: number) => getDateString(new Date(timestamp)) === getDateString(new Date());
+
 export default function QuotesScreen() {
   const [dailyQuoteEnabled, setDailyQuoteEnabled] = useState(false);
   const [history, setHistory] = useState<QuoteHistoryEntry[]>([]);
@@ -275,11 +279,21 @@ export default function QuotesScreen() {
             No quotes yet — enable daily quotes above.
           </Text>
         }
-        renderItem={({ item }) => (
-          <View style={styles.historyItem}>
-            <Text style={styles.historyQuestion}>{item.quote}</Text>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const isNew = isToday(item.fetchedAt);
+          return (
+            <View style={[styles.historyItem, isNew && styles.historyItemToday]}>
+              {isNew && (
+                <View style={styles.todayBadge}>
+                  <Text style={styles.todayBadgeText}>TODAY</Text>
+                </View>
+              )}
+              <Text style={[styles.historyQuestion, isNew && styles.historyQuestionToday]}>
+                {item.quote}
+              </Text>
+            </View>
+          );
+        }}
       />
     </View>
   );
@@ -373,11 +387,39 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 10,
   },
+  historyItemToday: {
+    backgroundColor: '#fef2f2',
+    borderWidth: 1.5,
+    borderColor: '#dc2626',
+    shadowColor: '#dc2626',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  todayBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#dc2626',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 8,
+  },
+  todayBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
   historyQuestion: {
     fontSize: 15,
     fontWeight: '600',
     color: '#111827',
     marginBottom: 4,
+  },
+  historyQuestionToday: {
+    color: '#7f1d1d',
+    fontWeight: '700',
   },
   historyAnswer: {
     fontSize: 14,
