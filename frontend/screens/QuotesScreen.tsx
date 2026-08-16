@@ -227,7 +227,7 @@ export default function QuotesScreen() {
         <Text style={styles.screenTitle}>Quotes</Text>
       </View>
       <Text style={styles.screenDescription}>
-        Get {QUOTES_PER_DAY} inspirational quotes generated automatically every day at midnight.
+        Get {QUOTES_PER_DAY} inspirational quotes generated automatically every day.
       </Text>
 
       <View style={styles.settingsSection}>
@@ -252,7 +252,7 @@ export default function QuotesScreen() {
           {isGenerating ? (
             <>
               <ActivityIndicator color="#dc2626" size="small" />
-              <Text style={styles.statusText}>Generating today's quotes\u2026</Text>
+              <Text style={styles.statusText}>Generating today's quotes</Text>
             </>
           ) : generatedToday ? (
             <>

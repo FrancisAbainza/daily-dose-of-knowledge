@@ -228,7 +228,7 @@ export default function TriviaScreen() {
         <Text style={styles.screenTitle}>Trivia</Text>
       </View>
       <Text style={styles.screenDescription}>
-        Get {TRIVIAS_PER_DAY} trivia questions generated automatically every day at midnight.
+        Get {TRIVIAS_PER_DAY} trivia questions generated automatically every day.
       </Text>
 
       <View style={styles.settingsSection}>
@@ -253,7 +253,7 @@ export default function TriviaScreen() {
           {isGenerating ? (
             <>
               <ActivityIndicator color="#2563eb" size="small" />
-              <Text style={styles.statusText}>Generating today's trivias\u2026</Text>
+              <Text style={styles.statusText}>Generating today's trivias</Text>
             </>
           ) : generatedToday ? (
             <>

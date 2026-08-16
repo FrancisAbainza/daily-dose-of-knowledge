@@ -228,7 +228,7 @@ export default function VocabularyScreen() {
         <Text style={styles.screenTitle}>Vocabulary</Text>
       </View>
       <Text style={styles.screenDescription}>
-        Get {WORDS_PER_DAY} vocabulary words generated automatically every day at midnight.
+        Get {WORDS_PER_DAY} vocabulary words generated automatically every day.
       </Text>
 
       <View style={styles.settingsSection}>
@@ -253,7 +253,7 @@ export default function VocabularyScreen() {
           {isGenerating ? (
             <>
               <ActivityIndicator color="#7c3aed" size="small" />
-              <Text style={styles.statusText}>Generating today's words\u2026</Text>
+              <Text style={styles.statusText}>Generating today's words</Text>
             </>
           ) : generatedToday ? (
             <>

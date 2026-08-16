@@ -227,7 +227,7 @@ export default function BibleVerseScreen() {
         <Text style={styles.screenTitle}>Bible Verse</Text>
       </View>
       <Text style={styles.screenDescription}>
-        Get {VERSES_PER_DAY} Bible verses generated automatically every day at midnight.
+        Get {VERSES_PER_DAY} Bible verses generated automatically every day.
       </Text>
 
       <View style={styles.settingsSection}>
@@ -252,7 +252,7 @@ export default function BibleVerseScreen() {
           {isGenerating ? (
             <>
               <ActivityIndicator color="#059669" size="small" />
-              <Text style={styles.statusText}>Generating today's verses\u2026</Text>
+              <Text style={styles.statusText}>Generating today's verses</Text>
             </>
           ) : generatedToday ? (
             <>
