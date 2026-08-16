@@ -9,6 +9,8 @@ import {
 
 const router = express.Router();
 
+const MAX_ITEM_COUNT = 20; // safety cap to avoid abuse / runaway generation, shared by all endpoints
+
 function buildExclusionText(recentItems = []) {
   if (!recentItems.length) return '';
   return `\n\nDo not repeat any of these previously used items:\n${recentItems
@@ -16,19 +18,36 @@ function buildExclusionText(recentItems = []) {
     .join('\n')}`;
 }
 
+// Clamps/validates a requested count the same way across all endpoints.
+function resolveCount(count) {
+  return Math.min(MAX_ITEM_COUNT, Math.max(1, Number.isFinite(count) ? Math.floor(count) : 1));
+}
+
 router.post('/trivia', async (req, res) => {
-  const { recentTrivias = [] } = req.body;
+  const { recentTrivias = [], count = 1 } = req.body;
+  const numToGenerate = resolveCount(count);
 
   const topics = ['science', 'history', 'geography', 'pop culture', 'sports', 'space', 'animals'];
-  const randomTopic = topics[Math.floor(Math.random() * topics.length)];
 
-  const prompt = `Generate one interesting trivia question about ${randomTopic}, with its answer.${buildExclusionText(
-    recentTrivias
-  )}`;
+  // Generated one at a time so each subsequent question also excludes the
+  // ones we've just generated in this same batch, avoiding duplicates
+  // within a single request.
+  const exclusions = [...recentTrivias];
+  const items = [];
 
   try {
-    const data = await generateContent(triviaSchema, prompt);
-    res.json(data);
+    for (let i = 0; i < numToGenerate; i++) {
+      const randomTopic = topics[Math.floor(Math.random() * topics.length)];
+      const prompt = `Generate one interesting trivia question about ${randomTopic}, with its answer.${buildExclusionText(
+        exclusions
+      )}`;
+
+      const data = await generateContent(triviaSchema, prompt);
+      items.push(data);
+      exclusions.push(data.question);
+    }
+
+    res.json(items);
   } catch (error) {
     console.error('Error generating trivia:', error);
     res.status(500).json({ error: 'Failed to generate trivia' });
@@ -36,15 +55,24 @@ router.post('/trivia', async (req, res) => {
 });
 
 router.post('/vocabulary', async (req, res) => {
-  const { recentWords = [] } = req.body;
+  const { recentWords = [], count = 1 } = req.body;
+  const numToGenerate = resolveCount(count);
 
-  const prompt = `Generate one useful vocabulary word with its definition.${buildExclusionText(
-    recentWords
-  )}`;
+  const exclusions = [...recentWords];
+  const items = [];
 
   try {
-    const data = await generateContent(vocabularySchema, prompt);
-    res.json(data);
+    for (let i = 0; i < numToGenerate; i++) {
+      const prompt = `Generate one useful vocabulary word with its definition.${buildExclusionText(
+        exclusions
+      )}`;
+
+      const data = await generateContent(vocabularySchema, prompt);
+      items.push(data);
+      exclusions.push(data.word);
+    }
+
+    res.json(items);
   } catch (error) {
     console.error('Error generating vocabulary:', error);
     res.status(500).json({ error: 'Failed to generate vocabulary' });
@@ -52,13 +80,22 @@ router.post('/vocabulary', async (req, res) => {
 });
 
 router.post('/quote', async (req, res) => {
-  const { recentQuotes = [] } = req.body;
+  const { recentQuotes = [], count = 1 } = req.body;
+  const numToGenerate = resolveCount(count);
 
-  const prompt = `Generate one inspiring quote.${buildExclusionText(recentQuotes)}`;
+  const exclusions = [...recentQuotes];
+  const items = [];
 
   try {
-    const data = await generateContent(quoteSchema, prompt);
-    res.json(data);
+    for (let i = 0; i < numToGenerate; i++) {
+      const prompt = `Generate one inspiring quote.${buildExclusionText(exclusions)}`;
+
+      const data = await generateContent(quoteSchema, prompt);
+      items.push(data);
+      exclusions.push(data.quote);
+    }
+
+    res.json(items);
   } catch (error) {
     console.error('Error generating quote:', error);
     res.status(500).json({ error: 'Failed to generate quote' });
@@ -66,15 +103,24 @@ router.post('/quote', async (req, res) => {
 });
 
 router.post('/bible-verse', async (req, res) => {
-  const { recentVerses = [] } = req.body;
+  const { recentVerses = [], count = 1 } = req.body;
+  const numToGenerate = resolveCount(count);
 
-  const prompt = `Generate one meaningful Bible verse, including its reference (book, chapter, verse).${buildExclusionText(
-    recentVerses
-  )}`;
+  const exclusions = [...recentVerses];
+  const items = [];
 
   try {
-    const data = await generateContent(bibleVerseSchema, prompt);
-    res.json(data);
+    for (let i = 0; i < numToGenerate; i++) {
+      const prompt = `Generate one meaningful Bible verse, including its reference (book, chapter, verse).${buildExclusionText(
+        exclusions
+      )}`;
+
+      const data = await generateContent(bibleVerseSchema, prompt);
+      items.push(data);
+      exclusions.push(data.verse);
+    }
+
+    res.json(items);
   } catch (error) {
     console.error('Error generating Bible verse:', error);
     res.status(500).json({ error: 'Failed to generate Bible verse' });

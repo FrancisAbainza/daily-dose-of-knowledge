@@ -1,121 +1,187 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   Switch,
-  TextInput,
   FlatList,
-  TouchableOpacity,
+  AppState,
+  AppStateStatus,
   ActivityIndicator,
 } from 'react-native';
-import { BookOpen, RefreshCw } from 'lucide-react-native';
+import { BookOpen, CheckCircle2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { fetchVocabulary, VocabularyItem } from '../api/content';
 
 const STORAGE_KEY_ENABLED = '@vocabulary_daily_enabled';
-const STORAGE_KEY_INTERVAL = '@vocabulary_interval_hours';
 const STORAGE_KEY_HISTORY = '@vocabulary_history';
+const STORAGE_KEY_LAST_GENERATED_DATE = '@vocabulary_last_generated_date';
 
-const DEFAULT_INTERVAL_HOURS = '12';
 const VOCABULARY_NOTIFICATION_ID = 'vocabulary-daily-notification';
-const MAX_HISTORY = 20;
+const WORDS_PER_DAY = 5;
+const MAX_HISTORY = 50;
 
 type VocabularyHistoryEntry = VocabularyItem & {
   id: string;
   fetchedAt: number;
 };
 
+// Local YYYY-MM-DD, so "day" boundaries follow the device's calendar day,
+// not UTC.
+const getDateString = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 export default function VocabularyScreen() {
   const [dailyVocabularyEnabled, setDailyVocabularyEnabled] = useState(false);
-  const [intervalHours, setIntervalHours] = useState(DEFAULT_INTERVAL_HOURS);
   const [history, setHistory] = useState<VocabularyHistoryEntry[]>([]);
-  const [isFetching, setIsFetching] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [generatedToday, setGeneratedToday] = useState(false);
 
   const hasLoaded = useRef(false);
-  const lastValidInterval = useRef(DEFAULT_INTERVAL_HOURS);
   const historyRef = useRef<VocabularyHistoryEntry[]>([]);
+  const lastGeneratedDateRef = useRef<string | null>(null);
 
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  // Generates WORDS_PER_DAY new vocabulary words and appends them to
+  // history. Also stamps today's date so this can't run again until
+  // tomorrow. This is the ONLY way words get created — there is no
+  // manual "generate" action available to the user.
+  const generateDailyVocabulary = useCallback(async () => {
+    setIsGenerating(true);
+    setErrorMsg(null);
+
+    try {
+      const recentWords = historyRef.current.map((item) => item.word);
+      const words = await fetchVocabulary(recentWords, WORDS_PER_DAY);
+
+      const newEntries: VocabularyHistoryEntry[] = words.map((word, i) => ({
+        id: `${Date.now()}-${i}`,
+        word: word.word,
+        definition: word.definition,
+        fetchedAt: Date.now(),
+      }));
+
+      const updatedHistory = [...newEntries, ...historyRef.current].slice(0, MAX_HISTORY);
+      historyRef.current = updatedHistory;
+      setHistory(updatedHistory);
+
+      const todayStr = getDateString(new Date());
+      lastGeneratedDateRef.current = todayStr;
+      setGeneratedToday(true);
+
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)),
+        AsyncStorage.setItem(STORAGE_KEY_LAST_GENERATED_DATE, todayStr),
+      ]);
+    } catch (error) {
+      console.warn('Failed to generate daily vocabulary:', error);
+      setErrorMsg('Could not generate today\u2019s words. Will retry next time the app opens.');
+    } finally {
+      setIsGenerating(false);
+    }
+  }, []);
+
+  // If daily vocabulary is enabled and we haven't generated for today's
+  // calendar date yet, generate now. Since generation always happens on
+  // or after midnight, there's no "time of day" check needed — a new
+  // local date simply means it's due. Safe to call often; no-ops
+  // otherwise.
+  const checkAndGenerateIfDue = useCallback(
+    async (enabled: boolean) => {
+      if (!hasLoaded.current) return;
+      if (!enabled) return;
+
+      const todayStr = getDateString(new Date());
+
+      if (lastGeneratedDateRef.current === todayStr) {
+        setGeneratedToday(true);
+        return;
+      }
+      setGeneratedToday(false);
+
+      await generateDailyVocabulary();
+    },
+    [generateDailyVocabulary]
+  );
+
+  // Load persisted settings + history on mount, then run the due-check
+  // once loading is complete (covers "app was closed when the day rolled
+  // over and is now being opened").
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const [storedEnabled, storedInterval] = await Promise.all([
+        const [storedEnabled, storedHistory, storedLastDate] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY_ENABLED),
-          AsyncStorage.getItem(STORAGE_KEY_INTERVAL),
+          AsyncStorage.getItem(STORAGE_KEY_HISTORY),
+          AsyncStorage.getItem(STORAGE_KEY_LAST_GENERATED_DATE),
         ]);
 
-        if (storedEnabled !== null) {
-          setDailyVocabularyEnabled(JSON.parse(storedEnabled));
+        const enabled = storedEnabled !== null ? JSON.parse(storedEnabled) : false;
+        setDailyVocabularyEnabled(enabled);
+
+        if (storedHistory !== null) {
+          const parsed = JSON.parse(storedHistory);
+          setHistory(parsed);
+          historyRef.current = parsed;
         }
-        if (storedInterval !== null) {
-          setIntervalHours(storedInterval);
-          lastValidInterval.current = storedInterval;
+
+        if (storedLastDate !== null) {
+          lastGeneratedDateRef.current = storedLastDate;
+          setGeneratedToday(storedLastDate === getDateString(new Date()));
         }
+
+        hasLoaded.current = true;
+        await checkAndGenerateIfDue(enabled);
       } catch (error) {
         console.warn('Failed to load vocabulary settings:', error);
-      } finally {
         hasLoaded.current = true;
       }
     };
 
     loadSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Re-check whenever the app is brought to the foreground — this is what
+  // catches "user opens the app after midnight has passed".
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        checkAndGenerateIfDue(dailyVocabularyEnabled);
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [checkAndGenerateIfDue, dailyVocabularyEnabled]);
+
+  // Persist "enabled" whenever the user changes it, and re-check in case
+  // today hasn't generated yet.
   useEffect(() => {
     if (!hasLoaded.current) return;
     AsyncStorage.setItem(STORAGE_KEY_ENABLED, JSON.stringify(dailyVocabularyEnabled)).catch((error) => {
       console.warn('Failed to save vocabulary enabled setting:', error);
     });
+    checkAndGenerateIfDue(dailyVocabularyEnabled);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyVocabularyEnabled]);
 
+  // Schedule/cancel the repeating midnight local notification whenever
+  // "enabled" changes. The notification just alerts the user that new
+  // words are ready — actual generation happens on app open via
+  // checkAndGenerateIfDue, since a local notification can't run app code
+  // to fetch fresh content while the app is closed.
   useEffect(() => {
     if (!hasLoaded.current) return;
-    if (intervalHours === '') return;
-
-    lastValidInterval.current = intervalHours;
-    AsyncStorage.setItem(STORAGE_KEY_INTERVAL, intervalHours).catch((error) => {
-      console.warn('Failed to save vocabulary interval setting:', error);
-    });
-  }, [intervalHours]);
-
-  const getNewVocabulary = async (): Promise<VocabularyHistoryEntry | null> => {
-    setIsFetching(true);
-    setErrorMsg(null);
-
-    try {
-      const recentWords = historyRef.current.map((item) => item.word);
-      const vocabulary = await fetchVocabulary(recentWords);
-
-      const entry: VocabularyHistoryEntry = {
-        id: `${Date.now()}`,
-        word: vocabulary.word,
-        definition: vocabulary.definition,
-        fetchedAt: Date.now(),
-      };
-
-      const updatedHistory = [entry, ...historyRef.current].slice(0, MAX_HISTORY);
-      historyRef.current = updatedHistory;
-      setHistory(updatedHistory);
-
-      AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)).catch((error) => {
-        console.warn('Failed to save vocabulary history:', error);
-      });
-
-      return entry;
-    } catch (error) {
-      console.warn('Failed to fetch vocabulary:', error);
-      setErrorMsg('Could not fetch a new word. Please try again.');
-      return null;
-    } finally {
-      setIsFetching(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!hasLoaded.current) return;
-    if (intervalHours === '') return;
 
     const syncNotification = async () => {
       await Notifications.cancelScheduledNotificationAsync(VOCABULARY_NOTIFICATION_ID).catch(() => {});
@@ -133,47 +199,23 @@ export default function VocabularyScreen() {
         return;
       }
 
-      const entry = await getNewVocabulary();
-      const seconds = parseInt(intervalHours, 10) * 3600;
-
       await Notifications.scheduleNotificationAsync({
         identifier: VOCABULARY_NOTIFICATION_ID,
         content: {
-          title: 'Word of the day 📚',
-          body: entry?.word ? `${entry.word} — ${entry.definition}` : 'Check out today\'s word of the day!',
+          title: 'Word of the day \ud83d\udcda',
+          body: `Your ${WORDS_PER_DAY} daily vocabulary words are ready. Open the app to see them.`,
         },
         trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-          seconds,
+          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+          hour: 0,
+          minute: 0,
           repeats: true,
         },
       });
     };
 
     syncNotification();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dailyVocabularyEnabled, intervalHours]);
-
-  const handleIntervalChange = (value: string) => {
-    if (value === '') {
-      setIntervalHours('');
-      return;
-    }
-
-    if (!/^\d+$/.test(value)) {
-      return;
-    }
-
-    const numericValue = parseInt(value, 10);
-    const clampedValue = Math.min(24, Math.max(1, numericValue));
-    setIntervalHours(String(clampedValue));
-  };
-
-  const handleIntervalBlur = () => {
-    if (intervalHours === '') {
-      setIntervalHours(lastValidInterval.current);
-    }
-  };
+  }, [dailyVocabularyEnabled]);
 
   return (
     <View style={styles.screenContainer}>
@@ -181,13 +223,17 @@ export default function VocabularyScreen() {
         <BookOpen size={22} color="#7c3aed" />
         <Text style={styles.screenTitle}>Vocabulary</Text>
       </View>
-      <Text style={styles.screenDescription}>Build your vocabulary with new words.</Text>
+      <Text style={styles.screenDescription}>
+        Get {WORDS_PER_DAY} vocabulary words generated automatically every day at midnight.
+      </Text>
 
       <View style={styles.settingsSection}>
         <View style={styles.settingRow}>
           <View style={styles.settingLabelContainer}>
             <Text style={styles.settingLabel}>Daily word reminder</Text>
-            <Text style={styles.settingSubtext}>Receive a vocabulary word sent to you periodically.</Text>
+            <Text style={styles.settingSubtext}>
+              Automatically generate {WORDS_PER_DAY} words once per day.
+            </Text>
           </View>
           <Switch
             value={dailyVocabularyEnabled}
@@ -196,39 +242,25 @@ export default function VocabularyScreen() {
             thumbColor={dailyVocabularyEnabled ? '#7c3aed' : '#f4f3f4'}
           />
         </View>
-
-        {dailyVocabularyEnabled && (
-          <View style={styles.settingRow}>
-            <View style={styles.settingLabelContainer}>
-              <Text style={styles.settingLabel}>Notification interval</Text>
-              <Text style={styles.settingSubtext}>Every how many hours (1-24)</Text>
-            </View>
-            <TextInput
-              style={styles.intervalInput}
-              value={intervalHours}
-              onChangeText={handleIntervalChange}
-              onBlur={handleIntervalBlur}
-              keyboardType="number-pad"
-              maxLength={2}
-            />
-          </View>
-        )}
       </View>
 
-      <TouchableOpacity
-        style={styles.fetchButton}
-        onPress={getNewVocabulary}
-        disabled={isFetching}
-      >
-        {isFetching ? (
-          <ActivityIndicator color="#ffffff" size="small" />
-        ) : (
-          <>
-            <RefreshCw size={16} color="#ffffff" />
-            <Text style={styles.fetchButtonText}>Get New Word</Text>
-          </>
-        )}
-      </TouchableOpacity>
+      {dailyVocabularyEnabled && (
+        <View style={styles.statusRow}>
+          {isGenerating ? (
+            <>
+              <ActivityIndicator color="#7c3aed" size="small" />
+              <Text style={styles.statusText}>Generating today's words\u2026</Text>
+            </>
+          ) : generatedToday ? (
+            <>
+              <CheckCircle2 size={16} color="#16a34a" />
+              <Text style={styles.statusText}>Today's words are ready</Text>
+            </>
+          ) : (
+            <Text style={styles.statusText}>Today's words haven't generated yet</Text>
+          )}
+        </View>
+      )}
 
       {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
 
@@ -241,7 +273,7 @@ export default function VocabularyScreen() {
         contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
         ListEmptyComponent={
           <Text style={styles.historyEmptyText}>
-            No words yet — tap "Get New Word" to fetch one.
+            No words yet — enable daily vocabulary above.
           </Text>
         }
         renderItem={({ item }) => (
@@ -288,8 +320,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e7eb',
   },
   settingLabelContainer: {
     flex: 1,
@@ -305,31 +335,15 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     marginTop: 2,
   },
-  intervalInput: {
-    width: 56,
-    height: 40,
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    textAlign: 'center',
-    fontSize: 16,
-    color: '#111827',
-    backgroundColor: '#f9fafb',
-  },
-  fetchButton: {
+  statusRow: {
     marginTop: 16,
-    backgroundColor: '#7c3aed',
-    borderRadius: 10,
-    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
   },
-  fetchButtonText: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '600',
+  statusText: {
+    fontSize: 13,
+    color: '#4b5563',
   },
   errorText: {
     color: '#dc2626',
