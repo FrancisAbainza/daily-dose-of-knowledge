@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  StyleSheet,
-  Text,
-  View,
-  Switch,
-  FlatList,
+  ActivityIndicator,
   AppState,
   AppStateStatus,
-  ActivityIndicator,
+  FlatList,
+  Platform,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
 } from 'react-native';
-import { Brain, CheckCircle2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { fetchTrivia, TriviaItem } from '../api/content'; // adjust path as needed
+import { Brain, CheckCircle2 } from 'lucide-react-native';
+import { fetchTrivia, TriviaItem } from '../api/content';
+import { getDateString, isToday } from '../utils/dailyContent';
 
 const STORAGE_KEY_ENABLED = '@trivia_daily_enabled';
 const STORAGE_KEY_HISTORY = '@trivia_history';
 const STORAGE_KEY_LAST_GENERATED_DATE = '@trivia_last_generated_date';
 
-const TRIVIA_NOTIFICATION_ID = 'trivia-daily-notification';
+const NOTIFICATION_ID = 'trivia-daily-notification';
+const NOTIFICATION_CHANNEL_ID = 'trivia-daily';
+
 const TRIVIAS_PER_DAY = 5;
 const MAX_HISTORY = 50;
 
@@ -27,272 +31,345 @@ type TriviaHistoryEntry = TriviaItem & {
   fetchedAt: number;
 };
 
-// Local YYYY-MM-DD, so "day" boundaries follow the device's calendar day,
-// not UTC.
-const getDateString = (date: Date) => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
-
-// Whether a history entry was fetched on today's local calendar date, so
-// it can be visually emphasized in the list.
-const isToday = (timestamp: number) => getDateString(new Date(timestamp)) === getDateString(new Date());
-
 export default function TriviaScreen() {
-  const [dailyTriviaEnabled, setDailyTriviaEnabled] = useState(false);
+  const [enabled, setEnabled] = useState(false);
   const [history, setHistory] = useState<TriviaHistoryEntry[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [generatedToday, setGeneratedToday] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const hasLoaded = useRef(false);
-  const historyRef = useRef<TriviaHistoryEntry[]>([]);
-  const lastGeneratedDateRef = useRef<string | null>(null);
+  // This is NOT state because the UI does not need to react to it.
+  // It only prevents two async generation calls from running together.
+  const generatingRef = useRef(false);
 
-  useEffect(() => {
-    historyRef.current = history;
-  }, [history]);
+  const generateIfNeeded = useCallback(async () => {
+    if (!enabled || generatingRef.current) {
+      return;
+    }
 
-  // Generates TRIVIAS_PER_DAY new trivia questions and appends them to
-  // history. Also stamps today's date so this can't run again until
-  // tomorrow. This is the ONLY way trivias get created — there is no
-  // manual "generate" action available to the user.
-  const generateDailyTrivias = useCallback(async () => {
+    const today = getDateString();
+
+    const lastGeneratedDate = await AsyncStorage.getItem(
+      STORAGE_KEY_LAST_GENERATED_DATE
+    );
+
+    if (lastGeneratedDate === today) {
+      return;
+    }
+
+    generatingRef.current = true;
     setIsGenerating(true);
-    setErrorMsg(null);
+    setError(null);
 
     try {
-      const recentQuestions = historyRef.current.map((item) => item.question);
-      const trivias = await fetchTrivia(recentQuestions, TRIVIAS_PER_DAY);
+      const questions = history.map((item) => item.question);
 
-      const newEntries: TriviaHistoryEntry[] = trivias.map((trivia, i) => ({
-        id: `${Date.now()}-${i}`,
-        question: trivia.question,
-        answer: trivia.answer,
-        fetchedAt: Date.now(),
-      }));
+      const trivias = await fetchTrivia(
+        questions,
+        TRIVIAS_PER_DAY
+      );
 
-      const updatedHistory = [...newEntries, ...historyRef.current].slice(0, MAX_HISTORY);
-      historyRef.current = updatedHistory;
+      const now = Date.now();
+
+      const newEntries: TriviaHistoryEntry[] = trivias.map(
+        (trivia, index) => ({
+          ...trivia,
+          id: `${now}-${index}`,
+          fetchedAt: now,
+        })
+      );
+
+      const updatedHistory = [
+        ...newEntries,
+        ...history,
+      ].slice(0, MAX_HISTORY);
+
       setHistory(updatedHistory);
 
-      const todayStr = getDateString(new Date());
-      lastGeneratedDateRef.current = todayStr;
-      setGeneratedToday(true);
-
-      await Promise.all([
-        AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)),
-        AsyncStorage.setItem(STORAGE_KEY_LAST_GENERATED_DATE, todayStr),
+      await AsyncStorage.multiSet([
+        [
+          STORAGE_KEY_HISTORY,
+          JSON.stringify(updatedHistory),
+        ],
+        [
+          STORAGE_KEY_LAST_GENERATED_DATE,
+          today,
+        ],
       ]);
-    } catch (error) {
-      console.warn('Failed to generate daily trivias:', error);
-      setErrorMsg('Could not generate today\u2019s trivias. Will retry next time the app opens.');
+    } catch (err) {
+      console.warn('Failed to generate trivia:', err);
+      setError(
+        'Could not generate today’s trivias. Please try again later.'
+      );
     } finally {
+      generatingRef.current = false;
       setIsGenerating(false);
     }
-  }, []);
+  }, [enabled, history]);
 
-  // If daily trivia is enabled and we haven't generated for today's
-  // calendar date yet, generate now. Since generation always happens on
-  // or after midnight, there's no "time of day" check needed — a new
-  // local date simply means it's due. Safe to call often; no-ops
-  // otherwise.
-  const checkAndGenerateIfDue = useCallback(
-    async (enabled: boolean) => {
-      if (!hasLoaded.current) return;
-      if (!enabled) return;
-
-      const todayStr = getDateString(new Date());
-
-      if (lastGeneratedDateRef.current === todayStr) {
-        setGeneratedToday(true);
-        return;
-      }
-      setGeneratedToday(false);
-
-      await generateDailyTrivias();
-    },
-    [generateDailyTrivias]
-  );
-
-  // Load persisted settings + history on mount, then run the due-check
-  // once loading is complete (covers "app was closed when the day rolled
-  // over and is now being opened").
+  /*
+   * INITIALIZATION
+   *
+   * Load everything that was persisted from the previous session.
+   */
   useEffect(() => {
-    const loadSettings = async () => {
+    async function initialize() {
       try {
-        const [storedEnabled, storedHistory, storedLastDate] = await Promise.all([
-          AsyncStorage.getItem(STORAGE_KEY_ENABLED),
-          AsyncStorage.getItem(STORAGE_KEY_HISTORY),
-          AsyncStorage.getItem(STORAGE_KEY_LAST_GENERATED_DATE),
-        ]);
+        const [storedEnabled, storedHistory] =
+          await Promise.all([
+            AsyncStorage.getItem(STORAGE_KEY_ENABLED),
+            AsyncStorage.getItem(STORAGE_KEY_HISTORY),
+          ]);
 
-        const enabled = storedEnabled !== null ? JSON.parse(storedEnabled) : false;
-        setDailyTriviaEnabled(enabled);
+        if (storedEnabled !== null) {
+          setEnabled(JSON.parse(storedEnabled));
+        }
 
         if (storedHistory !== null) {
-          const parsed = JSON.parse(storedHistory);
-          setHistory(parsed);
-          historyRef.current = parsed;
+          setHistory(JSON.parse(storedHistory));
         }
-
-        if (storedLastDate !== null) {
-          lastGeneratedDateRef.current = storedLastDate;
-          setGeneratedToday(storedLastDate === getDateString(new Date()));
-        }
-
-        hasLoaded.current = true;
-        await checkAndGenerateIfDue(enabled);
-      } catch (error) {
-        console.warn('Failed to load trivia settings:', error);
-        hasLoaded.current = true;
+      } catch (err) {
+        console.warn('Failed to load trivia data:', err);
       }
-    };
+    }
 
-    loadSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    initialize();
   }, []);
 
-  // Re-check whenever the app is brought to the foreground — this is what
-  // catches "user opens the app after midnight has passed".
+  /*
+   * GENERATE AFTER INITIALIZATION
+   *
+   * Once enabled/history have been loaded, this effect runs whenever
+   * either changes. The date check inside generateIfNeeded prevents
+   * unnecessary generation.
+   */
   useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
+    if (enabled) {
+      generateIfNeeded();
+    }
+  }, [enabled, generateIfNeeded]);
+
+  /*
+   * APP FOREGROUND
+   *
+   * If the user opens the app after midnight, check whether today's
+   * trivia has been generated.
+   */
+  useEffect(() => {
+    function handleAppStateChange(nextState: AppStateStatus) {
       if (nextState === 'active') {
-        checkAndGenerateIfDue(dailyTriviaEnabled);
+        generateIfNeeded();
       }
-    };
+    }
 
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    const subscription = AppState.addEventListener(
+      'change',
+      handleAppStateChange
+    );
+
     return () => subscription.remove();
-  }, [checkAndGenerateIfDue, dailyTriviaEnabled]);
+  }, [generateIfNeeded]);
 
-  // Persist "enabled" whenever the user changes it, and re-check in case
-  // today hasn't generated yet.
+  /*
+   * SWITCH + NOTIFICATION
+   */
   useEffect(() => {
-    if (!hasLoaded.current) return;
-    AsyncStorage.setItem(STORAGE_KEY_ENABLED, JSON.stringify(dailyTriviaEnabled)).catch((error) => {
-      console.warn('Failed to save trivia enabled setting:', error);
+    AsyncStorage.setItem(
+      STORAGE_KEY_ENABLED,
+      JSON.stringify(enabled)
+    ).catch((err) => {
+      console.warn('Failed to save trivia setting:', err);
     });
-    checkAndGenerateIfDue(dailyTriviaEnabled);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dailyTriviaEnabled]);
 
-  // Schedule/cancel the repeating midnight local notification whenever
-  // "enabled" changes. The notification just alerts the user that trivia
-  // is ready — actual generation happens on app open via
-  // checkAndGenerateIfDue, since a local notification can't run app code
-  // to fetch fresh content while the app is closed.
-  useEffect(() => {
-    if (!hasLoaded.current) return;
+    async function syncNotification() {
+      try {
+        await Notifications.cancelScheduledNotificationAsync(
+          NOTIFICATION_ID
+        );
 
-    const syncNotification = async () => {
-      await Notifications.cancelScheduledNotificationAsync(TRIVIA_NOTIFICATION_ID).catch(() => {});
+        if (!enabled) {
+          return;
+        }
 
-      if (!dailyTriviaEnabled) return;
+        const { status: existingStatus } =
+          await Notifications.getPermissionsAsync();
 
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
+        let status = existingStatus;
+
+        if (status !== 'granted') {
+          const result =
+            await Notifications.requestPermissionsAsync();
+
+          status = result.status;
+        }
+
+        if (status !== 'granted') {
+          console.warn(
+            'Notification permission was not granted.'
+          );
+          return;
+        }
+
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync(
+            NOTIFICATION_CHANNEL_ID,
+            {
+              name: 'Daily trivia',
+              importance: Notifications.AndroidImportance.DEFAULT,
+            }
+          );
+        }
+
+        await Notifications.scheduleNotificationAsync({
+          identifier: NOTIFICATION_ID,
+          content: {
+            title: 'Trivia time! 🧠',
+            body: `Your ${TRIVIAS_PER_DAY} daily trivia questions are ready.`,
+            ...(Platform.OS === 'android' && {
+              channelId: NOTIFICATION_CHANNEL_ID,
+            }),
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+            hour: 0,
+            minute: 0,
+            repeats: true,
+          },
+        });
+      } catch (err) {
+        console.warn(
+          'Failed to sync trivia notification:',
+          err
+        );
       }
-      if (finalStatus !== 'granted') {
-        console.warn('Notification permission not granted; trivia notifications disabled.');
-        return;
-      }
-
-      await Notifications.scheduleNotificationAsync({
-        identifier: TRIVIA_NOTIFICATION_ID,
-        content: {
-          title: 'Trivia time! \ud83e\udde0',
-          body: `Your ${TRIVIAS_PER_DAY} daily trivia questions are ready. Open the app to see them.`,
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
-          hour: 0,
-          minute: 0,
-          repeats: true,
-        },
-      });
-    };
+    }
 
     syncNotification();
-  }, [dailyTriviaEnabled]);
+  }, [enabled]);
 
   return (
-    <View style={styles.screenContainer}>
+    <View style={styles.screen}>
       <View style={styles.titleRow}>
         <Brain size={22} color="#2563eb" />
-        <Text style={styles.screenTitle}>Trivia</Text>
+
+        <Text style={styles.title}>
+          Trivia
+        </Text>
       </View>
-      <Text style={styles.screenDescription}>
-        Get {TRIVIAS_PER_DAY} trivia questions generated automatically every day.
+
+      <Text style={styles.description}>
+        Get {TRIVIAS_PER_DAY} trivia questions generated
+        automatically every day.
       </Text>
 
-      <View style={styles.settingsSection}>
+      <View style={styles.settingsCard}>
         <View style={styles.settingRow}>
-          <View style={styles.settingLabelContainer}>
-            <Text style={styles.settingLabel}>Daily dose of trivia</Text>
-            <Text style={styles.settingSubtext}>
-              Automatically generate {TRIVIAS_PER_DAY} questions once per day.
+          <View style={styles.settingText}>
+            <Text style={styles.settingTitle}>
+              Daily dose of trivia
+            </Text>
+
+            <Text style={styles.settingDescription}>
+              Automatically generate {TRIVIAS_PER_DAY} questions
+              once per day.
             </Text>
           </View>
+
           <Switch
-            value={dailyTriviaEnabled}
-            onValueChange={setDailyTriviaEnabled}
-            trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-            thumbColor={dailyTriviaEnabled ? '#2563eb' : '#f4f3f4'}
+            value={enabled}
+            onValueChange={setEnabled}
+            trackColor={{
+              false: '#d1d5db',
+              true: '#93c5fd',
+            }}
+            thumbColor={
+              enabled ? '#2563eb' : '#f4f3f4'
+            }
           />
         </View>
       </View>
 
-      {dailyTriviaEnabled && (
+      {enabled && (
         <View style={styles.statusRow}>
           {isGenerating ? (
             <>
-              <ActivityIndicator color="#2563eb" size="small" />
-              <Text style={styles.statusText}>Generating today's trivias</Text>
-            </>
-          ) : generatedToday ? (
-            <>
-              <CheckCircle2 size={16} color="#16a34a" />
-              <Text style={styles.statusText}>Today's trivias are ready</Text>
+              <ActivityIndicator
+                size="small"
+                color="#2563eb"
+              />
+
+              <Text style={styles.statusText}>
+                Generating today's trivias...
+              </Text>
             </>
           ) : (
-            <Text style={styles.statusText}>Today's trivias haven't generated yet</Text>
+            <>
+              <CheckCircle2
+                size={16}
+                color="#16a34a"
+              />
+
+              <Text style={styles.statusText}>
+                Today's trivias are ready
+              </Text>
+            </>
           )}
         </View>
       )}
 
-      {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+      {error && (
+        <Text style={styles.error}>
+          {error}
+        </Text>
+      )}
 
-      <Text style={styles.historyTitle}>Recent Trivia</Text>
+      <Text style={styles.historyTitle}>
+        Recent Trivia
+      </Text>
 
       <FlatList
         data={history}
         keyExtractor={(item) => item.id}
-        style={styles.historyList}
-        contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
+        style={styles.list}
+        contentContainerStyle={
+          history.length === 0
+            ? styles.emptyContainer
+            : undefined
+        }
         ListEmptyComponent={
-          <Text style={styles.historyEmptyText}>
+          <Text style={styles.emptyText}>
             No trivia yet — enable daily trivia above.
           </Text>
         }
         renderItem={({ item }) => {
-          const isNew = isToday(item.fetchedAt);
+          const today = isToday(item.fetchedAt);
+
           return (
-            <View style={[styles.historyItem, isNew && styles.historyItemToday]}>
-              {isNew && (
+            <View
+              style={[
+                styles.historyItem,
+                today && styles.todayItem,
+              ]}
+            >
+              {today && (
                 <View style={styles.todayBadge}>
-                  <Text style={styles.todayBadgeText}>TODAY</Text>
+                  <Text style={styles.todayBadgeText}>
+                    TODAY
+                  </Text>
                 </View>
               )}
-              <Text style={[styles.historyQuestion, isNew && styles.historyQuestionToday]}>
+
+              <Text
+                style={[
+                  styles.question,
+                  today && styles.todayQuestion,
+                ]}
+              >
                 {item.question}
               </Text>
-              <Text style={styles.historyAnswer}>{item.answer}</Text>
+
+              <Text style={styles.answer}>
+                {item.answer}
+              </Text>
             </View>
           );
         }}
@@ -302,68 +379,80 @@ export default function TriviaScreen() {
 }
 
 const styles = StyleSheet.create({
-  screenContainer: {
+  screen: {
     flex: 1,
     padding: 24,
     backgroundColor: '#f7f9fc',
   },
+
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  screenTitle: {
+
+  title: {
     fontSize: 28,
     fontWeight: '700',
     color: '#111827',
     marginBottom: 12,
   },
-  screenDescription: {
+
+  description: {
     fontSize: 16,
     color: '#4b5563',
   },
-  settingsSection: {
+
+  settingsCard: {
     marginTop: 28,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff',
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 8,
   },
+
   settingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 14,
   },
-  settingLabelContainer: {
+
+  settingText: {
     flex: 1,
     paddingRight: 12,
   },
-  settingLabel: {
+
+  settingTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: '#111827',
   },
-  settingSubtext: {
+
+  settingDescription: {
     fontSize: 13,
     color: '#6b7280',
     marginTop: 2,
   },
+
   statusRow: {
     marginTop: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
+
   statusText: {
     fontSize: 13,
     color: '#4b5563',
   },
-  errorText: {
+
+  error: {
     color: '#dc2626',
     fontSize: 13,
     marginTop: 8,
   },
+
   historyTitle: {
     fontSize: 18,
     fontWeight: '700',
@@ -371,34 +460,43 @@ const styles = StyleSheet.create({
     marginTop: 24,
     marginBottom: 8,
   },
-  historyList: {
+
+  list: {
     flex: 1,
   },
-  historyEmptyContainer: {
+
+  emptyContainer: {
     flexGrow: 1,
     justifyContent: 'center',
   },
-  historyEmptyText: {
+
+  emptyText: {
     textAlign: 'center',
     color: '#9ca3af',
     fontSize: 14,
   },
+
   historyItem: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff',
     borderRadius: 10,
     padding: 14,
     marginBottom: 10,
   },
-  historyItemToday: {
+
+  todayItem: {
     backgroundColor: '#eff6ff',
     borderWidth: 1.5,
     borderColor: '#2563eb',
     shadowColor: '#2563eb',
     shadowOpacity: 0.15,
     shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
     elevation: 2,
   },
+
   todayBadge: {
     alignSelf: 'flex-start',
     backgroundColor: '#2563eb',
@@ -407,23 +505,27 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     marginBottom: 8,
   },
+
   todayBadgeText: {
-    color: '#ffffff',
+    color: '#fff',
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-  historyQuestion: {
+
+  question: {
     fontSize: 15,
     fontWeight: '600',
     color: '#111827',
     marginBottom: 4,
   },
-  historyQuestionToday: {
+
+  todayQuestion: {
     color: '#1e3a8a',
     fontWeight: '700',
   },
-  historyAnswer: {
+
+  answer: {
     fontSize: 14,
     color: '#4b5563',
   },

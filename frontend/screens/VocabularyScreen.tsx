@@ -8,17 +8,20 @@ import {
   AppState,
   AppStateStatus,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { BookOpen, CheckCircle2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { fetchVocabulary, VocabularyItem } from '../api/content';
+import { getDateString, isToday } from '../utils/dailyContent';
 
 const STORAGE_KEY_ENABLED = '@vocabulary_daily_enabled';
 const STORAGE_KEY_HISTORY = '@vocabulary_history';
 const STORAGE_KEY_LAST_GENERATED_DATE = '@vocabulary_last_generated_date';
 
 const VOCABULARY_NOTIFICATION_ID = 'vocabulary-daily-notification';
+const VOCABULARY_CHANNEL_ID = 'vocabulary-daily';
 const WORDS_PER_DAY = 5;
 const MAX_HISTORY = 50;
 
@@ -27,157 +30,91 @@ type VocabularyHistoryEntry = VocabularyItem & {
   fetchedAt: number;
 };
 
-// Local YYYY-MM-DD, so "day" boundaries follow the device's calendar day,
-// not UTC.
-const getDateString = (date: Date) => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
-
-// Whether a history entry was fetched on today's local calendar date, so
-// it can be visually emphasized in the list.
-const isToday = (timestamp: number) => getDateString(new Date(timestamp)) === getDateString(new Date());
-
 export default function VocabularyScreen() {
-  const [dailyVocabularyEnabled, setDailyVocabularyEnabled] = useState(false);
+  const [enabled, setEnabled] = useState(false);
   const [history, setHistory] = useState<VocabularyHistoryEntry[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [generatedToday, setGeneratedToday] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const hasLoaded = useRef(false);
-  const historyRef = useRef<VocabularyHistoryEntry[]>([]);
-  const lastGeneratedDateRef = useRef<string | null>(null);
+  const generatingRef = useRef(false);
 
-  useEffect(() => {
-    historyRef.current = history;
-  }, [history]);
+  const generateIfNeeded = useCallback(async () => {
+    if (!enabled || generatingRef.current) return;
 
-  // Generates WORDS_PER_DAY new vocabulary words and appends them to
-  // history. Also stamps today's date so this can't run again until
-  // tomorrow. This is the ONLY way words get created — there is no
-  // manual "generate" action available to the user.
-  const generateDailyVocabulary = useCallback(async () => {
+    const today = getDateString();
+    const lastGeneratedDate = await AsyncStorage.getItem(STORAGE_KEY_LAST_GENERATED_DATE);
+    if (lastGeneratedDate === today) return;
+
+    generatingRef.current = true;
     setIsGenerating(true);
-    setErrorMsg(null);
+    setError(null);
 
     try {
-      const recentWords = historyRef.current.map((item) => item.word);
+      const recentWords = history.map((item) => item.word);
       const words = await fetchVocabulary(recentWords, WORDS_PER_DAY);
+      const now = Date.now();
 
-      const newEntries: VocabularyHistoryEntry[] = words.map((word, i) => ({
-        id: `${Date.now()}-${i}`,
-        word: word.word,
-        definition: word.definition,
-        fetchedAt: Date.now(),
+      const newEntries: VocabularyHistoryEntry[] = words.map((word, index) => ({
+        ...word,
+        id: `${now}-${index}`,
+        fetchedAt: now,
       }));
 
-      const updatedHistory = [...newEntries, ...historyRef.current].slice(0, MAX_HISTORY);
-      historyRef.current = updatedHistory;
+      const updatedHistory = [...newEntries, ...history].slice(0, MAX_HISTORY);
       setHistory(updatedHistory);
 
-      const todayStr = getDateString(new Date());
-      lastGeneratedDateRef.current = todayStr;
-      setGeneratedToday(true);
-
-      await Promise.all([
-        AsyncStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)),
-        AsyncStorage.setItem(STORAGE_KEY_LAST_GENERATED_DATE, todayStr),
+      await AsyncStorage.multiSet([
+        [STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)],
+        [STORAGE_KEY_LAST_GENERATED_DATE, today],
       ]);
-    } catch (error) {
-      console.warn('Failed to generate daily vocabulary:', error);
-      setErrorMsg('Could not generate today\u2019s words. Will retry next time the app opens.');
+    } catch (err) {
+      console.warn('Failed to generate vocabulary:', err);
+      setError('Could not generate today\u2019s words. Please try again later.');
     } finally {
+      generatingRef.current = false;
       setIsGenerating(false);
     }
-  }, []);
-
-  // If daily vocabulary is enabled and we haven't generated for today's
-  // calendar date yet, generate now. Since generation always happens on
-  // or after midnight, there's no "time of day" check needed — a new
-  // local date simply means it's due. Safe to call often; no-ops
-  // otherwise.
-  const checkAndGenerateIfDue = useCallback(
-    async (enabled: boolean) => {
-      if (!hasLoaded.current) return;
-      if (!enabled) return;
-
-      const todayStr = getDateString(new Date());
-
-      if (lastGeneratedDateRef.current === todayStr) {
-        setGeneratedToday(true);
-        return;
-      }
-      setGeneratedToday(false);
-
-      await generateDailyVocabulary();
-    },
-    [generateDailyVocabulary]
-  );
+  }, [enabled, history]);
 
   // Load persisted settings + history on mount, then run the due-check
   // once loading is complete (covers "app was closed when the day rolled
   // over and is now being opened").
   useEffect(() => {
-    const loadSettings = async () => {
+    async function initialize() {
       try {
-        const [storedEnabled, storedHistory, storedLastDate] = await Promise.all([
+        const [storedEnabled, storedHistory] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY_ENABLED),
           AsyncStorage.getItem(STORAGE_KEY_HISTORY),
-          AsyncStorage.getItem(STORAGE_KEY_LAST_GENERATED_DATE),
         ]);
 
-        const enabled = storedEnabled !== null ? JSON.parse(storedEnabled) : false;
-        setDailyVocabularyEnabled(enabled);
-
-        if (storedHistory !== null) {
-          const parsed = JSON.parse(storedHistory);
-          setHistory(parsed);
-          historyRef.current = parsed;
-        }
-
-        if (storedLastDate !== null) {
-          lastGeneratedDateRef.current = storedLastDate;
-          setGeneratedToday(storedLastDate === getDateString(new Date()));
-        }
-
-        hasLoaded.current = true;
-        await checkAndGenerateIfDue(enabled);
-      } catch (error) {
-        console.warn('Failed to load vocabulary settings:', error);
-        hasLoaded.current = true;
+        if (storedEnabled !== null) setEnabled(JSON.parse(storedEnabled));
+        if (storedHistory !== null) setHistory(JSON.parse(storedHistory));
+      } catch (err) {
+        console.warn('Failed to load vocabulary data:', err);
       }
-    };
+    }
 
-    loadSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    initialize();
   }, []);
 
-  // Re-check whenever the app is brought to the foreground — this is what
-  // catches "user opens the app after midnight has passed".
   useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
-        checkAndGenerateIfDue(dailyVocabularyEnabled);
-      }
-    };
+    if (enabled) generateIfNeeded();
+  }, [enabled, generateIfNeeded]);
+
+  useEffect(() => {
+    function handleAppStateChange(nextState: AppStateStatus) {
+      if (nextState === 'active') generateIfNeeded();
+    }
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
-  }, [checkAndGenerateIfDue, dailyVocabularyEnabled]);
+  }, [generateIfNeeded]);
 
-  // Persist "enabled" whenever the user changes it, and re-check in case
-  // today hasn't generated yet.
   useEffect(() => {
-    if (!hasLoaded.current) return;
-    AsyncStorage.setItem(STORAGE_KEY_ENABLED, JSON.stringify(dailyVocabularyEnabled)).catch((error) => {
-      console.warn('Failed to save vocabulary enabled setting:', error);
+    AsyncStorage.setItem(STORAGE_KEY_ENABLED, JSON.stringify(enabled)).catch((err) => {
+      console.warn('Failed to save vocabulary setting:', err);
     });
-    checkAndGenerateIfDue(dailyVocabularyEnabled);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dailyVocabularyEnabled]);
+  }, [enabled]);
 
   // Schedule/cancel the repeating midnight local notification whenever
   // "enabled" changes. The notification just alerts the user that new
@@ -185,41 +122,41 @@ export default function VocabularyScreen() {
   // checkAndGenerateIfDue, since a local notification can't run app code
   // to fetch fresh content while the app is closed.
   useEffect(() => {
-    if (!hasLoaded.current) return;
-
     const syncNotification = async () => {
-      await Notifications.cancelScheduledNotificationAsync(VOCABULARY_NOTIFICATION_ID).catch(() => {});
-
-      if (!dailyVocabularyEnabled) return;
-
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
+      try {
+        await Notifications.cancelScheduledNotificationAsync(VOCABULARY_NOTIFICATION_ID);
+        if (!enabled) return;
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let status = existingStatus;
+        if (status !== 'granted') status = (await Notifications.requestPermissionsAsync()).status;
+        if (status !== 'granted') return;
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync(VOCABULARY_CHANNEL_ID, {
+            name: 'Daily vocabulary',
+            importance: Notifications.AndroidImportance.DEFAULT,
+          });
+        }
+        await Notifications.scheduleNotificationAsync({
+          identifier: VOCABULARY_NOTIFICATION_ID,
+          content: {
+            title: 'Word of the day \ud83d\udcda',
+            body: `Your ${WORDS_PER_DAY} daily vocabulary words are ready.`,
+            ...(Platform.OS === 'android' && { channelId: VOCABULARY_CHANNEL_ID }),
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+            hour: 0,
+            minute: 0,
+            repeats: true,
+          },
+        });
+      } catch (err) {
+        console.warn('Failed to sync vocabulary notification:', err);
       }
-      if (finalStatus !== 'granted') {
-        console.warn('Notification permission not granted; vocabulary notifications disabled.');
-        return;
-      }
-
-      await Notifications.scheduleNotificationAsync({
-        identifier: VOCABULARY_NOTIFICATION_ID,
-        content: {
-          title: 'Word of the day \ud83d\udcda',
-          body: `Your ${WORDS_PER_DAY} daily vocabulary words are ready. Open the app to see them.`,
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
-          hour: 0,
-          minute: 0,
-          repeats: true,
-        },
-      });
     };
 
     syncNotification();
-  }, [dailyVocabularyEnabled]);
+  }, [enabled]);
 
   return (
     <View style={styles.screenContainer}>
@@ -240,33 +177,31 @@ export default function VocabularyScreen() {
             </Text>
           </View>
           <Switch
-            value={dailyVocabularyEnabled}
-            onValueChange={setDailyVocabularyEnabled}
+            value={enabled}
+            onValueChange={setEnabled}
             trackColor={{ false: '#d1d5db', true: '#c4b5fd' }}
-            thumbColor={dailyVocabularyEnabled ? '#7c3aed' : '#f4f3f4'}
+            thumbColor={enabled ? '#7c3aed' : '#f4f3f4'}
           />
         </View>
       </View>
 
-      {dailyVocabularyEnabled && (
+      {enabled && (
         <View style={styles.statusRow}>
           {isGenerating ? (
             <>
               <ActivityIndicator color="#7c3aed" size="small" />
               <Text style={styles.statusText}>Generating today's words</Text>
             </>
-          ) : generatedToday ? (
+          ) : (
             <>
               <CheckCircle2 size={16} color="#16a34a" />
               <Text style={styles.statusText}>Today's words are ready</Text>
             </>
-          ) : (
-            <Text style={styles.statusText}>Today's words haven't generated yet</Text>
           )}
         </View>
       )}
 
-      {errorMsg && <Text style={styles.errorText}>{errorMsg}</Text>}
+      {error && <Text style={styles.errorText}>{error}</Text>}
 
       <Text style={styles.historyTitle}>Recent Words</Text>
 
