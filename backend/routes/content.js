@@ -1,11 +1,6 @@
 import express from 'express';
 import { generateContent } from '../utils/generateContent.js';
-import {
-  triviaSchema,
-  vocabularySchema,
-  quoteSchema,
-  bibleVerseSchema,
-} from '../schemas/contentSchemas.js';
+import { triviaSchema, vocabularySchema, quoteSchema } from '../schemas/contentSchemas.js';
 
 const router = express.Router();
 
@@ -99,31 +94,6 @@ router.post('/quote', async (req, res) => {
   } catch (error) {
     console.error('Error generating quote:', error);
     res.status(500).json({ error: 'Failed to generate quote' });
-  }
-});
-
-router.post('/bible-verse', async (req, res) => {
-  const { recentVerses = [], count = 1 } = req.body;
-  const numToGenerate = resolveCount(count);
-
-  const exclusions = [...recentVerses];
-  const items = [];
-
-  try {
-    for (let i = 0; i < numToGenerate; i++) {
-      const prompt = `Generate one meaningful Bible verse, including its reference (book, chapter, verse).${buildExclusionText(
-        exclusions
-      )}`;
-
-      const data = await generateContent(bibleVerseSchema, prompt);
-      items.push(data);
-      exclusions.push(data.verse);
-    }
-
-    res.json(items);
-  } catch (error) {
-    console.error('Error generating Bible verse:', error);
-    res.status(500).json({ error: 'Failed to generate Bible verse' });
   }
 });
 

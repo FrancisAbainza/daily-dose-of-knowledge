@@ -24,12 +24,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "extra": {
-      "eas": {
-        "projectId": "b6290d5e-7afb-4a57-a1d2-c6e167c92dc4"
-      }
-    },
-    "owner": "francisabainza",
     "plugins": [
       [
         "expo-splash-screen",
@@ -40,7 +34,19 @@
           "backgroundColor": "#128AD9"
         }
       ],
-      "expo-notifications"
-    ]
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#128AD9"
+        }
+      ]
+    ],
+    "owner": "francisabainza",
+    "extra": {
+      "eas": {
+        "projectId": "b6290d5e-7afb-4a57-a1d2-c6e167c92dc4"
+      }
+    }
   }
 }

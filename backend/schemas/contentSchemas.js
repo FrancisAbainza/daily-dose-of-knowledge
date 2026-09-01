@@ -13,7 +13,3 @@ export const vocabularySchema = z.object({
 export const quoteSchema = z.object({
   quote: z.string(),
 });
-
-export const bibleVerseSchema = z.object({
-  verse: z.string(),
-});

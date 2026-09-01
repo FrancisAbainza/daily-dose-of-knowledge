@@ -22,10 +22,9 @@ async function postContent<T>(
 export type TriviaItem = { question: string; answer: string };
 export type VocabularyItem = { word: string; definition: string };
 export type QuoteItem = { quote: string };
-export type BibleVerseItem = { verse: string };
 
 // count defaults to 1 for backwards compatibility with existing callers.
-// All four endpoints now return an array of length `count`.
+// All three endpoints return an array of length `count`.
 export const fetchTrivia = (recentTrivias: string[] = [], count: number = 1) =>
   postContent<TriviaItem[]>('trivia', { recentTrivias, count });
 
@@ -34,6 +33,3 @@ export const fetchVocabulary = (recentWords: string[] = [], count: number = 1) =
 
 export const fetchQuote = (recentQuotes: string[] = [], count: number = 1) =>
   postContent<QuoteItem[]>('quote', { recentQuotes, count });
-
-export const fetchBibleVerse = (recentVerses: string[] = [], count: number = 1) =>
-  postContent<BibleVerseItem[]>('bible-verse', { recentVerses, count });

@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  StyleSheet,
-  Text,
-  View,
-  Switch,
-  FlatList,
+  ActivityIndicator,
   AppState,
   AppStateStatus,
-  ActivityIndicator,
+  FlatList,
   Platform,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
 } from 'react-native';
-import { Quote, CheckCircle2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { CheckCircle2, Quote } from 'lucide-react-native';
 import { fetchQuote, QuoteItem } from '../api/content';
 import { getDateString, isToday } from '../utils/dailyContent';
 
@@ -21,6 +21,7 @@ const STORAGE_KEY_HISTORY = '@quotes_history';
 const STORAGE_KEY_LAST_GENERATED_DATE = '@quotes_last_generated_date';
 
 const QUOTES_NOTIFICATION_ID = 'quotes-daily-notification';
+const QUOTES_CHANNEL_ID = 'quotes-daily';
 const QUOTES_PER_DAY = 5;
 const MAX_HISTORY = 50;
 
@@ -36,35 +37,64 @@ export default function QuotesScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const generatingRef = useRef(false);
+  const isInitializedRef = useRef(false);
+  const historyRef = useRef<QuoteHistoryEntry[]>([]);
 
   const generateIfNeeded = useCallback(async () => {
-    if (!enabled || generatingRef.current) return;
+    if (generatingRef.current) {
+      return;
+    }
+
+    if (!isInitializedRef.current) {
+      return;
+    }
 
     const today = getDateString();
-    const lastGeneratedDate = await AsyncStorage.getItem(STORAGE_KEY_LAST_GENERATED_DATE);
-    if (lastGeneratedDate === today) return;
+    const lastGeneratedDate = await AsyncStorage.getItem(
+      STORAGE_KEY_LAST_GENERATED_DATE
+    );
+
+    if (lastGeneratedDate === today) {
+      return;
+    }
 
     generatingRef.current = true;
     setIsGenerating(true);
     setError(null);
 
     try {
-      const recentQuotes = history.map((item) => item.quote);
-      const quotes = await fetchQuote(recentQuotes, QUOTES_PER_DAY);
+      const currentHistory = historyRef.current;
+      const recentQuotes = currentHistory.map((item) => item.quote);
+      const quotes = await fetchQuote(
+        recentQuotes,
+        QUOTES_PER_DAY
+      );
       const now = Date.now();
 
-      const newEntries: QuoteHistoryEntry[] = quotes.map((quote, index) => ({
-        ...quote,
-        id: `${now}-${index}`,
-        fetchedAt: now,
-      }));
+      const newEntries: QuoteHistoryEntry[] = quotes.map(
+        (quote, index) => ({
+          ...quote,
+          id: `${now}-${index}`,
+          fetchedAt: now,
+        })
+      );
 
-      const updatedHistory = [...newEntries, ...history].slice(0, MAX_HISTORY);
+      const updatedHistory = [
+        ...newEntries,
+        ...currentHistory,
+      ].slice(0, MAX_HISTORY);
+      historyRef.current = updatedHistory;
       setHistory(updatedHistory);
 
       await AsyncStorage.multiSet([
-        [STORAGE_KEY_HISTORY, JSON.stringify(updatedHistory)],
-        [STORAGE_KEY_LAST_GENERATED_DATE, today],
+        [
+          STORAGE_KEY_HISTORY,
+          JSON.stringify(updatedHistory),
+        ],
+        [
+          STORAGE_KEY_LAST_GENERATED_DATE,
+          today,
+        ],
       ]);
     } catch (err) {
       console.warn('Failed to generate quotes:', err);
@@ -73,7 +103,7 @@ export default function QuotesScreen() {
       generatingRef.current = false;
       setIsGenerating(false);
     }
-  }, [enabled, history]);
+  }, []);
 
   useEffect(() => {
     async function initialize() {
@@ -83,23 +113,31 @@ export default function QuotesScreen() {
           AsyncStorage.getItem(STORAGE_KEY_HISTORY),
         ]);
 
-        if (storedEnabled !== null) setEnabled(JSON.parse(storedEnabled));
-        if (storedHistory !== null) setHistory(JSON.parse(storedHistory));
+        if (storedEnabled !== null) {
+          setEnabled(JSON.parse(storedEnabled));
+        }
+
+        if (storedHistory !== null) {
+          const parsedHistory = JSON.parse(storedHistory);
+          historyRef.current = parsedHistory;
+          setHistory(parsedHistory);
+        }
       } catch (err) {
         console.warn('Failed to load quote data:', err);
+      } finally {
+        isInitializedRef.current = true;
+        generateIfNeeded();
       }
     }
 
     initialize();
-  }, []);
-
-  useEffect(() => {
-    if (enabled) generateIfNeeded();
-  }, [enabled, generateIfNeeded]);
+  }, [generateIfNeeded]);
 
   useEffect(() => {
     function handleAppStateChange(nextState: AppStateStatus) {
-      if (nextState === 'active') generateIfNeeded();
+      if (nextState === 'active') {
+        generateIfNeeded();
+      }
     }
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
@@ -117,32 +155,33 @@ export default function QuotesScreen() {
       try {
         await Notifications.cancelScheduledNotificationAsync(QUOTES_NOTIFICATION_ID);
         if (!enabled) return;
-
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let status = existingStatus;
         if (status !== 'granted') status = (await Notifications.requestPermissionsAsync()).status;
-        if (status !== 'granted') return;
-
+        if (status !== 'granted') {
+          console.warn('Notification permission was not granted.');
+          setEnabled(false);
+          return;
+        }
         if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('quotes-daily', {
+          await Notifications.setNotificationChannelAsync(QUOTES_CHANNEL_ID, {
             name: 'Daily quotes',
-            importance: Notifications.AndroidImportance.DEFAULT,
+            importance: Notifications.AndroidImportance.HIGH,
+            sound: 'default',
           });
         }
-
         await Notifications.scheduleNotificationAsync({
           identifier: QUOTES_NOTIFICATION_ID,
           content: {
             title: 'Quote of the day \u2728',
             body: `Your ${QUOTES_PER_DAY} daily quotes are ready.`,
-            ...(Platform.OS === 'android' && { channelId: 'quotes-daily' }),
+            ...(Platform.OS === 'android' && { channelId: QUOTES_CHANNEL_ID }),
           },
           trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+            type: Notifications.SchedulableTriggerInputTypes.DAILY,
             hour: 0,
             minute: 0,
-            repeats: true,
-          },
+          }
         });
       } catch (err) {
         console.warn('Failed to sync quote notification:', err);
@@ -165,9 +204,9 @@ export default function QuotesScreen() {
       <View style={styles.settingsSection}>
         <View style={styles.settingRow}>
           <View style={styles.settingLabelContainer}>
-            <Text style={styles.settingLabel}>Daily dose of quotes</Text>
+            <Text style={styles.settingLabel}>Daily quote notification</Text>
             <Text style={styles.settingSubtext}>
-              Automatically generate {QUOTES_PER_DAY} quotes once per day.
+              Get notified when today's {QUOTES_PER_DAY} quotes are ready.
             </Text>
           </View>
           <Switch
@@ -179,21 +218,19 @@ export default function QuotesScreen() {
         </View>
       </View>
 
-      {enabled && (
-        <View style={styles.statusRow}>
-          {isGenerating ? (
-            <>
-              <ActivityIndicator color="#dc2626" size="small" />
-              <Text style={styles.statusText}>Generating today's quotes</Text>
-            </>
-          ) : (
-            <>
-              <CheckCircle2 size={16} color="#16a34a" />
-              <Text style={styles.statusText}>Today's quotes are ready</Text>
-            </>
-          )}
-        </View>
-      )}
+      <View style={styles.statusRow}>
+        {isGenerating ? (
+          <>
+            <ActivityIndicator color="#dc2626" size="small" />
+            <Text style={styles.statusText}>Generating today's quotes</Text>
+          </>
+        ) : (
+          <>
+            <CheckCircle2 size={16} color="#16a34a" />
+            <Text style={styles.statusText}>Today's quotes are ready</Text>
+          </>
+        )}
+      </View>
 
       {error && <Text style={styles.errorText}>{error}</Text>}
 
@@ -206,7 +243,7 @@ export default function QuotesScreen() {
         contentContainerStyle={history.length === 0 && styles.historyEmptyContainer}
         ListEmptyComponent={
           <Text style={styles.historyEmptyText}>
-            No quotes yet — enable daily quotes above.
+            No quotes yet — check back soon.
           </Text>
         }
         renderItem={({ item }) => {
@@ -350,9 +387,5 @@ const styles = StyleSheet.create({
   historyQuestionToday: {
     color: '#7f1d1d',
     fontWeight: '700',
-  },
-  historyAnswer: {
-    fontSize: 14,
-    color: '#4b5563',
   },
 });

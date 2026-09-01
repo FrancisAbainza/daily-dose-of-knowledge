@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { Brain, BookOpen, Quote, Church } from 'lucide-react-native';
+import { Brain, BookOpen, Quote } from 'lucide-react-native';
 import type { ReactElement } from 'react';
 import { FlatList, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
@@ -8,7 +8,6 @@ type RootStackParamList = {
   Trivia: undefined;
   Vocabulary: undefined;
   Quotes: undefined;
-  BibleVerse: undefined;
 };
 
 type Option = {
@@ -22,7 +21,6 @@ const options: Option[] = [
   { id: '1', title: 'Trivia', icon: <Brain size={22} color="#2563eb" />, route: 'Trivia' },
   { id: '2', title: 'Vocabulary', icon: <BookOpen size={22} color="#7c3aed" />, route: 'Vocabulary' },
   { id: '3', title: 'Quotes', icon: <Quote size={22} color="#dc2626" />, route: 'Quotes' },
-  { id: '4', title: 'Bible Verse', icon: <Church size={22} color="#059669" />, route: 'BibleVerse' },
 ];
 
 function OptionItem({ item, onPress }: { item: Option; onPress: () => void }) {
